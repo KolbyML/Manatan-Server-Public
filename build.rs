@@ -40,6 +40,12 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=manatan_server");
+    #[cfg(target_os = "linux")]
+    {
+        println!("cargo:rustc-link-lib=bz2");
+        println!("cargo:rustc-link-lib=freetype");
+        println!("cargo:rustc-link-lib=fontconfig");
+    }
     println!("cargo:rerun-if-changed={}", lib_path.display());
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_TOKEN");
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_REPO");

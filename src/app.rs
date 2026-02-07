@@ -39,7 +39,6 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 pub fn build_router_without_cors(state: AppState) -> Router {
-    let api = Router::new().route("/{*path}", any(proxy_handler));
     let docs = Router::new()
         .route("/docs", any(proxy_handler))
         .route("/docs/{*path}", any(proxy_handler))
@@ -48,8 +47,9 @@ pub fn build_router_without_cors(state: AppState) -> Router {
     Router::new()
         .route("/health", any(proxy_handler))
         .route("/extension/icon/{apk_name}", any(proxy_handler))
+        .route("/api/v1", any(proxy_handler))
+        .route("/api/v1/{*path}", any(proxy_handler))
         .merge(docs)
-        .nest("/api/v1", api)
         .with_state(state)
 }
 
