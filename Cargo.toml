@@ -1,0 +1,24 @@
+[package]
+name = "manatan-server-public"
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+
+[lib]
+name = "manatan_server_public"
+path = "src/lib.rs"
+
+[dependencies]
+axum = { version = "0.8.7", features = ["macros", "ws"] }
+bytes = "1.6"
+futures = "0.3"
+reqwest = { version = "0.12", features = ["stream"] }
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
+tower-http = { version = "0.6.7", features = ["cors"] }
+tracing = "0.1"
+
+[build-dependencies]
+cfg-if = "1.0"
+serde_json = "1.0"
+ureq = "2.10"
