@@ -1,5 +1,4 @@
 use std::env;
-use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -50,7 +49,8 @@ fn download_release_asset(lib_path: &Path, target: &str, is_windows: bool) -> Re
     let repo = env::var("MANATAN_SERVER_PUBLIC_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string());
     let tag = DEFAULT_TAG;
     let asset_ext = if is_windows { "lib" } else { "a" };
-    let asset_name = format!("manatan-server-{}.{}", target, asset_ext);
+    let primary_asset_name = format!("manatan-server-{}.{}", target, asset_ext);
+    let legacy_asset_name = format!("manatan-server-manatan-server-{}.{}", target, asset_ext);
     let api_url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
 
     let token = env::var("MANATAN_SERVER_PUBLIC_TOKEN").ok();
@@ -63,8 +63,16 @@ fn download_release_asset(lib_path: &Path, target: &str, is_windows: bool) -> Re
 
     let asset = assets
         .iter()
-        .find(|value| value.get("name").and_then(|v| v.as_str()) == Some(asset_name.as_str()))
-        .ok_or_else(|| format!("asset not found: {asset_name}"))?;
+        .find(|value| {
+            let name = value.get("name").and_then(|v| v.as_str());
+            name == Some(primary_asset_name.as_str()) || name == Some(legacy_asset_name.as_str())
+        })
+        .ok_or_else(|| {
+            format!(
+                "asset not found: {} (or {})",
+                primary_asset_name, legacy_asset_name
+            )
+        })?;
 
     let download_url = asset
         .get("browser_download_url")
@@ -89,8 +97,7 @@ fn github_json(url: &str, token: Option<&str>) -> Result<serde_json::Value, Stri
     let response = request
         .call()
         .map_err(|err| format!("github api failed: {err}"))?;
-    response
-        .into_json::<serde_json::Value>()
+    serde_json::from_reader(response.into_reader())
         .map_err(|err| format!("invalid github json: {err}"))
 }
 
