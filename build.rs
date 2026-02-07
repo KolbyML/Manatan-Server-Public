@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_REPO: &str = "KolbyML/Manatan-Server-Public";
 const DEFAULT_TAG: &str = "stable";
@@ -46,8 +48,17 @@ fn main() {
         );
     }
 
+    if let Err(err) = maybe_repack_darwin_archive(&lib_path, &target) {
+        panic!(
+            "Failed to post-process static library for {} at {}: {}",
+            target,
+            lib_path.display(),
+            err
+        );
+    }
+
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
-    println!("cargo:rustc-link-lib=static=manatan_server");
+    println!("cargo:rustc-link-lib=static:-bundle=manatan_server");
     #[cfg(target_os = "linux")]
     {
         println!("cargo:rustc-link-lib=bz2");
@@ -175,4 +186,164 @@ fn download_file(url: &str, path: &Path, token: Option<&str>) -> Result<(), Stri
     let mut file = fs::File::create(path).map_err(|err| format!("create file failed: {err}"))?;
     io::copy(&mut reader, &mut file).map_err(|err| format!("write failed: {err}"))?;
     Ok(())
+}
+
+fn maybe_repack_darwin_archive(lib_path: &Path, target: &str) -> Result<(), String> {
+    if !target.contains("apple-darwin") || !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
+    if !archive_has_member(lib_path, "//")? {
+        return Ok(());
+    }
+
+    let workdir = env::temp_dir().join(format!(
+        "manatan-server-public-repack-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("time error: {err}"))?
+            .as_millis()
+    ));
+    let obj_dir = workdir.join("objs");
+    fs::create_dir_all(&obj_dir).map_err(|err| format!("create temp dir failed: {err}"))?;
+
+    let ar_bin = if command_exists("llvm-ar") {
+        "llvm-ar"
+    } else {
+        "ar"
+    };
+    let members_output = Command::new(ar_bin)
+        .arg("t")
+        .arg(lib_path)
+        .output()
+        .map_err(|err| format!("{ar_bin} t failed: {err}"))?;
+    if !members_output.status.success() {
+        return Err(format!(
+            "{ar_bin} t failed: {}",
+            String::from_utf8_lossy(&members_output.stderr)
+        ));
+    }
+
+    let members = String::from_utf8_lossy(&members_output.stdout);
+    let mut extracted = 0usize;
+    for member in members.lines() {
+        let member = member.trim();
+        if !is_object_member(member) {
+            continue;
+        }
+
+        let object = Command::new(ar_bin)
+            .arg("p")
+            .arg(lib_path)
+            .arg(member)
+            .output()
+            .map_err(|err| format!("{ar_bin} p {member} failed: {err}"))?;
+        if !object.status.success() {
+            return Err(format!(
+                "{ar_bin} p {member} failed: {}",
+                String::from_utf8_lossy(&object.stderr)
+            ));
+        }
+
+        let out = obj_dir.join(format!("m{extracted:05}.o"));
+        fs::write(&out, object.stdout).map_err(|err| format!("write object failed: {err}"))?;
+        extracted += 1;
+    }
+
+    if extracted == 0 {
+        return Err("no object members extracted from archive".to_string());
+    }
+
+    let fixed_lib = workdir.join("libmanatan_server.fixed.a");
+    let mut obj_paths = Vec::with_capacity(extracted);
+    for index in 0..extracted {
+        obj_paths.push(obj_dir.join(format!("m{index:05}.o")));
+    }
+
+    if command_exists("llvm-ar") {
+        if !run_pack_with_llvm_ar(&fixed_lib, &obj_paths, "darwin")
+            && !run_pack_with_llvm_ar(&fixed_lib, &obj_paths, "bsd")
+        {
+            return Err("failed to repack archive with llvm-ar".to_string());
+        }
+    } else {
+        run_pack_with_ar(&fixed_lib, &obj_paths)?;
+    }
+
+    let _ = Command::new("ranlib").arg(&fixed_lib).output();
+    fs::rename(&fixed_lib, lib_path).map_err(|err| format!("replace archive failed: {err}"))?;
+
+    if archive_has_member(lib_path, "//")? {
+        return Err("archive repack failed; GNU-style table still present".to_string());
+    }
+
+    let _ = fs::remove_dir_all(&workdir);
+    Ok(())
+}
+
+fn archive_has_member(lib_path: &Path, member_name: &str) -> Result<bool, String> {
+    let ar_bin = if command_exists("llvm-ar") {
+        "llvm-ar"
+    } else {
+        "ar"
+    };
+    let output = Command::new(ar_bin)
+        .arg("t")
+        .arg(lib_path)
+        .output()
+        .map_err(|err| format!("{ar_bin} t failed: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{ar_bin} t failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| line.trim() == member_name))
+}
+
+fn is_object_member(member: &str) -> bool {
+    let bytes = member.as_bytes();
+    bytes.len() > 1 && bytes[0] == b'/' && bytes[1..].iter().all(|b| b.is_ascii_digit())
+}
+
+fn run_pack_with_llvm_ar(fixed_lib: &Path, obj_paths: &[PathBuf], format: &str) -> bool {
+    let mut command = Command::new("llvm-ar");
+    command
+        .arg(format!("--format={format}"))
+        .arg("crs")
+        .arg(fixed_lib);
+    for obj in obj_paths {
+        command.arg(obj);
+    }
+
+    match command.output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
+fn run_pack_with_ar(fixed_lib: &Path, obj_paths: &[PathBuf]) -> Result<(), String> {
+    let mut command = Command::new("ar");
+    command.arg("crs").arg(fixed_lib);
+    for obj in obj_paths {
+        command.arg(obj);
+    }
+    let output = command
+        .output()
+        .map_err(|err| format!("ar crs failed: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "ar crs failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new(command).arg("--version").output().is_ok()
 }
