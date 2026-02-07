@@ -229,7 +229,7 @@ fn maybe_repack_darwin_archive(lib_path: &Path, target: &str) -> Result<(), Stri
     let mut extracted = 0usize;
     for member in members.lines() {
         let member = member.trim();
-        if !is_object_member(member) {
+        if !is_extractable_member(member) {
             continue;
         }
 
@@ -300,9 +300,11 @@ fn archive_has_member_system_ar(lib_path: &Path, member_name: &str) -> Result<bo
         .any(|line| line.trim() == member_name))
 }
 
-fn is_object_member(member: &str) -> bool {
-    let bytes = member.as_bytes();
-    bytes.len() > 1 && bytes[0] == b'/' && bytes[1..].iter().all(|b| b.is_ascii_digit())
+fn is_extractable_member(member: &str) -> bool {
+    if member.is_empty() || member == "//" {
+        return false;
+    }
+    !member.starts_with("__.SYMDEF")
 }
 
 fn run_pack_with_llvm_ar(fixed_lib: &Path, obj_paths: &[PathBuf], format: &str) -> bool {
