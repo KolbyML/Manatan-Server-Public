@@ -1,7 +1,7 @@
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{Request, State, ws::{Message, WebSocket, WebSocketUpgrade}},
+    extract::{FromRequestParts, Request, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::any,
