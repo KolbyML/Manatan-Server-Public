@@ -6,6 +6,14 @@ use std::path::{Path, PathBuf};
 const DEFAULT_REPO: &str = "KolbyML/Manatan-Server-Public";
 const DEFAULT_TAG: &str = "stable";
 
+#[derive(Debug, Clone)]
+struct ReleaseAsset {
+    id: u64,
+    name: String,
+    download_url: String,
+    updated_at: Option<String>,
+}
+
 fn main() {
     let target = env::var("TARGET").expect("TARGET not set");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -19,15 +27,15 @@ fn main() {
     };
 
     let lib_path = lib_dir.join(lib_name);
-    if !lib_path.exists() {
-        if let Err(err) = download_release_asset(&lib_path, &target, is_windows) {
-            panic!(
-                "Missing static library: {}. Expected {}. Download failed: {}",
-                target,
-                lib_path.display(),
-                err
-            );
-        }
+    let meta_path = lib_dir.join(format!("{}.asset-meta", lib_name));
+
+    if let Err(err) = sync_release_asset(&lib_path, &meta_path, &target, is_windows) {
+        panic!(
+            "Failed to sync static library for {} at {}: {}",
+            target,
+            lib_path.display(),
+            err
+        );
     }
 
     if !lib_path.exists() {
@@ -51,16 +59,48 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_REPO");
 }
 
-fn download_release_asset(lib_path: &Path, target: &str, is_windows: bool) -> Result<(), String> {
+fn sync_release_asset(
+    lib_path: &Path,
+    meta_path: &Path,
+    target: &str,
+    is_windows: bool,
+) -> Result<(), String> {
+    let token = env::var("MANATAN_SERVER_PUBLIC_TOKEN").ok();
+    let asset = release_asset_info(target, is_windows, token.as_deref())?;
+    let existing_meta = fs::read_to_string(meta_path).ok();
+    let expected_meta = format!(
+        "id={}\nname={}\nupdated_at={}\n",
+        asset.id,
+        asset.name,
+        asset.updated_at.as_deref().unwrap_or_default()
+    );
+
+    let needs_download =
+        !lib_path.exists() || existing_meta.as_deref() != Some(expected_meta.as_str());
+
+    if needs_download {
+        if let Some(parent) = lib_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| format!("create dir failed: {err}"))?;
+        }
+        download_file(&asset.download_url, lib_path, token.as_deref())?;
+        fs::write(meta_path, expected_meta).map_err(|err| format!("write meta failed: {err}"))?;
+    }
+
+    Ok(())
+}
+
+fn release_asset_info(
+    target: &str,
+    is_windows: bool,
+    token: Option<&str>,
+) -> Result<ReleaseAsset, String> {
     let repo = env::var("MANATAN_SERVER_PUBLIC_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string());
     let tag = DEFAULT_TAG;
     let asset_ext = if is_windows { "lib" } else { "a" };
     let primary_asset_name = format!("manatan-server-{}.{}", target, asset_ext);
     let legacy_asset_name = format!("manatan-server-manatan-server-{}.{}", target, asset_ext);
     let api_url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
-
-    let token = env::var("MANATAN_SERVER_PUBLIC_TOKEN").ok();
-    let json = github_json(&api_url, token.as_deref())?;
+    let json = github_json(&api_url, token)?;
 
     let assets = json
         .get("assets")
@@ -80,16 +120,31 @@ fn download_release_asset(lib_path: &Path, target: &str, is_windows: bool) -> Re
             )
         })?;
 
+    let id = asset
+        .get("id")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| "asset id missing".to_string())?;
+    let name = asset
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| "asset name missing".to_string())?
+        .to_string();
     let download_url = asset
         .get("browser_download_url")
         .and_then(|value| value.as_str())
-        .ok_or_else(|| "asset download URL missing".to_string())?;
+        .ok_or_else(|| "asset download URL missing".to_string())?
+        .to_string();
+    let updated_at = asset
+        .get("updated_at")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
 
-    if let Some(parent) = lib_path.parent() {
-        fs::create_dir_all(parent).map_err(|err| format!("create dir failed: {err}"))?;
-    }
-
-    download_file(download_url, lib_path, token.as_deref())
+    Ok(ReleaseAsset {
+        id,
+        name,
+        download_url,
+        updated_at,
+    })
 }
 
 fn github_json(url: &str, token: Option<&str>) -> Result<serde_json::Value, String> {
