@@ -193,7 +193,7 @@ fn maybe_repack_darwin_archive(lib_path: &Path, target: &str) -> Result<(), Stri
         return Ok(());
     }
 
-    if !archive_has_member(lib_path, "//")? {
+    if !archive_has_member_system_ar(lib_path, "//")? {
         return Ok(());
     }
 
@@ -274,7 +274,7 @@ fn maybe_repack_darwin_archive(lib_path: &Path, target: &str) -> Result<(), Stri
     let _ = Command::new("ranlib").arg(&fixed_lib).output();
     fs::rename(&fixed_lib, lib_path).map_err(|err| format!("replace archive failed: {err}"))?;
 
-    if archive_has_member(lib_path, "//")? {
+    if archive_has_member_system_ar(lib_path, "//")? {
         return Err("archive repack failed; GNU-style table still present".to_string());
     }
 
@@ -282,20 +282,15 @@ fn maybe_repack_darwin_archive(lib_path: &Path, target: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn archive_has_member(lib_path: &Path, member_name: &str) -> Result<bool, String> {
-    let ar_bin = if command_exists("llvm-ar") {
-        "llvm-ar"
-    } else {
-        "ar"
-    };
-    let output = Command::new(ar_bin)
+fn archive_has_member_system_ar(lib_path: &Path, member_name: &str) -> Result<bool, String> {
+    let output = Command::new("ar")
         .arg("t")
         .arg(lib_path)
         .output()
-        .map_err(|err| format!("{ar_bin} t failed: {err}"))?;
+        .map_err(|err| format!("ar t failed: {err}"))?;
     if !output.status.success() {
         return Err(format!(
-            "{ar_bin} t failed: {}",
+            "ar t failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
