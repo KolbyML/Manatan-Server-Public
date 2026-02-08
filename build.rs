@@ -55,13 +55,17 @@ fn main() {
         );
     }
 
+    if let Err(err) = ensure_sqlite_alias(&lib_dir, &target, &lib_path) {
+        panic!(
+            "Failed to prepare sqlite3 compatibility library for {} in {}: {}",
+            target,
+            lib_dir.display(),
+            err
+        );
+    }
+
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static:-bundle=manatan_server");
-    if target.contains("unknown-linux-gnu") {
-        println!("cargo:rustc-link-lib=bz2");
-        println!("cargo:rustc-link-lib=freetype");
-        println!("cargo:rustc-link-lib=fontconfig");
-    }
     println!("cargo:rerun-if-changed={}", lib_path.display());
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_REPO");
 }
@@ -137,6 +141,30 @@ fn download_file(url: &str, path: &Path) -> Result<(), String> {
     let mut reader = response.into_reader();
     let mut file = fs::File::create(path).map_err(|err| format!("create file failed: {err}"))?;
     io::copy(&mut reader, &mut file).map_err(|err| format!("write failed: {err}"))?;
+    Ok(())
+}
+
+fn ensure_sqlite_alias(lib_dir: &Path, target: &str, manatan_lib: &Path) -> Result<(), String> {
+    if target.contains("apple-ios") {
+        return Ok(());
+    }
+
+    let sqlite_alias = if target.contains("windows") {
+        lib_dir.join("sqlite3.lib")
+    } else {
+        lib_dir.join("libsqlite3.a")
+    };
+
+    if sqlite_alias != manatan_lib {
+        fs::copy(manatan_lib, &sqlite_alias).map_err(|err| {
+            format!(
+                "copy {} -> {} failed: {err}",
+                manatan_lib.display(),
+                sqlite_alias.display()
+            )
+        })?;
+    }
+
     Ok(())
 }
 
