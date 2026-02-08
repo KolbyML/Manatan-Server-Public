@@ -10,10 +10,8 @@ const DEFAULT_TAG: &str = "stable";
 
 #[derive(Debug, Clone)]
 struct ReleaseAsset {
-    id: u64,
     name: String,
     download_url: String,
-    updated_at: Option<String>,
 }
 
 fn main() {
@@ -59,14 +57,12 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static:-bundle=manatan_server");
-    #[cfg(target_os = "linux")]
-    {
+    if target.contains("unknown-linux-gnu") {
         println!("cargo:rustc-link-lib=bz2");
         println!("cargo:rustc-link-lib=freetype");
         println!("cargo:rustc-link-lib=fontconfig");
     }
     println!("cargo:rerun-if-changed={}", lib_path.display());
-    println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_TOKEN");
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_REPO");
 }
 
@@ -76,15 +72,9 @@ fn sync_release_asset(
     target: &str,
     is_windows: bool,
 ) -> Result<(), String> {
-    let token = env::var("MANATAN_SERVER_PUBLIC_TOKEN").ok();
-    let asset = release_asset_info(target, is_windows, token.as_deref())?;
+    let asset = release_asset_info(target, is_windows)?;
     let existing_meta = fs::read_to_string(meta_path).ok();
-    let expected_meta = format!(
-        "id={}\nname={}\nupdated_at={}\n",
-        asset.id,
-        asset.name,
-        asset.updated_at.as_deref().unwrap_or_default()
-    );
+    let expected_meta = format!("name={}\n", asset.name);
 
     let needs_download =
         !lib_path.exists() || existing_meta.as_deref() != Some(expected_meta.as_str());
@@ -93,91 +83,53 @@ fn sync_release_asset(
         if let Some(parent) = lib_path.parent() {
             fs::create_dir_all(parent).map_err(|err| format!("create dir failed: {err}"))?;
         }
-        download_file(&asset.download_url, lib_path, token.as_deref())?;
+        download_file(&asset.download_url, lib_path)?;
         fs::write(meta_path, expected_meta).map_err(|err| format!("write meta failed: {err}"))?;
     }
 
     Ok(())
 }
 
-fn release_asset_info(
-    target: &str,
-    is_windows: bool,
-    token: Option<&str>,
-) -> Result<ReleaseAsset, String> {
+fn release_asset_info(target: &str, is_windows: bool) -> Result<ReleaseAsset, String> {
     let repo = env::var("MANATAN_SERVER_PUBLIC_REPO").unwrap_or_else(|_| DEFAULT_REPO.to_string());
     let tag = DEFAULT_TAG;
     let asset_ext = if is_windows { "lib" } else { "a" };
     let primary_asset_name = format!("manatan-server-{}.{}", target, asset_ext);
     let legacy_asset_name = format!("manatan-server-manatan-server-{}.{}", target, asset_ext);
-    let api_url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
-    let json = github_json(&api_url, token)?;
+    let candidates = [
+        (
+            primary_asset_name.clone(),
+            format!("https://github.com/{repo}/releases/download/{tag}/{primary_asset_name}"),
+        ),
+        (
+            legacy_asset_name.clone(),
+            format!("https://github.com/{repo}/releases/download/{tag}/{legacy_asset_name}"),
+        ),
+    ];
 
-    let assets = json
-        .get("assets")
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| "release assets missing".to_string())?;
+    let mut last_err = String::new();
+    for (name, url) in candidates {
+        if url_exists(&url) {
+            return Ok(ReleaseAsset {
+                name,
+                download_url: url,
+            });
+        }
+        last_err = format!("asset URL not accessible: {url}");
+    }
 
-    let asset = assets
-        .iter()
-        .find(|value| {
-            let name = value.get("name").and_then(|v| v.as_str());
-            name == Some(primary_asset_name.as_str()) || name == Some(legacy_asset_name.as_str())
-        })
-        .ok_or_else(|| {
-            format!(
-                "asset not found: {} (or {})",
-                primary_asset_name, legacy_asset_name
-            )
-        })?;
-
-    let id = asset
-        .get("id")
-        .and_then(|value| value.as_u64())
-        .ok_or_else(|| "asset id missing".to_string())?;
-    let name = asset
-        .get("name")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "asset name missing".to_string())?
-        .to_string();
-    let download_url = asset
-        .get("browser_download_url")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "asset download URL missing".to_string())?
-        .to_string();
-    let updated_at = asset
-        .get("updated_at")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-
-    Ok(ReleaseAsset {
-        id,
-        name,
-        download_url,
-        updated_at,
-    })
+    Err(last_err)
 }
 
-fn github_json(url: &str, token: Option<&str>) -> Result<serde_json::Value, String> {
-    let mut request = ureq::get(url)
+fn url_exists(url: &str) -> bool {
+    ureq::head(url)
         .set("User-Agent", "manatan-server-public-build")
-        .set("Accept", "application/vnd.github+json");
-    if let Some(token) = token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
-
-    let response = request
         .call()
-        .map_err(|err| format!("github api failed: {err}"))?;
-    serde_json::from_reader(response.into_reader())
-        .map_err(|err| format!("invalid github json: {err}"))
+        .is_ok()
 }
 
-fn download_file(url: &str, path: &Path, token: Option<&str>) -> Result<(), String> {
-    let mut request = ureq::get(url).set("User-Agent", "manatan-server-public-build");
-    if let Some(token) = token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
-    }
+fn download_file(url: &str, path: &Path) -> Result<(), String> {
+    let request = ureq::get(url).set("User-Agent", "manatan-server-public-build");
 
     let response = request
         .call()
