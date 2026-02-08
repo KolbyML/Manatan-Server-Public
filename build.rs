@@ -66,6 +66,11 @@ fn main() {
 
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static:-bundle=manatan_server");
+    if target.contains("linux") && !target.contains("android") {
+        println!("cargo:rustc-link-lib=dylib=bz2");
+        println!("cargo:rustc-link-lib=dylib=fontconfig");
+        println!("cargo:rustc-link-lib=dylib=freetype");
+    }
     println!("cargo:rerun-if-changed={}", lib_path.display());
     println!("cargo:rerun-if-env-changed=MANATAN_SERVER_PUBLIC_REPO");
 }
