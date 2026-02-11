@@ -180,6 +180,7 @@ async fn proxy_request(
     };
 
     let target_url = format!("{base_url}{target_path}");
+    let icon_path = is_extension_icon_path(path_query);
     let method = req.method().clone();
     let headers = req.headers().clone();
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
@@ -197,6 +198,12 @@ async fn proxy_request(
             for (key, value) in resp.headers() {
                 response_builder = response_builder.header(key, value);
             }
+            if icon_path && resp.status() == StatusCode::NOT_FOUND {
+                response_builder = response_builder
+                    .header("cache-control", "no-store, no-cache, must-revalidate")
+                    .header("pragma", "no-cache")
+                    .header("expires", "0");
+            }
             response_builder
                 .body(Body::from_stream(resp.bytes_stream()))
                 .unwrap_or_else(|_| Response::builder()
@@ -209,6 +216,12 @@ async fn proxy_request(
             .body(Body::empty())
             .unwrap(),
     }
+}
+
+fn is_extension_icon_path(path_query: &str) -> bool {
+    path_query.starts_with("/api/v1/extension/icon/")
+        || path_query.starts_with("/api/v1/anime/extension/icon/")
+        || path_query.starts_with("/extension/icon/")
 }
 
 fn axum_to_tungstenite(msg: Message) -> Option<TungsteniteMessage> {
